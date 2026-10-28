@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+  namespace: scanner
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: garage
+  template:
+    metadata:
+      labels:
+        app: garage
+    spec:
+      containers:
+        - name: garage
+          image: dxflrs/garage:v2.5.0
+          command: ["/garage"]
+          args: ["server", "--single-node"]
+          ports:
+            - containerPort: 3900
+          env:
+            - name: GARAGE_RPC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: garage-rpc
+                  key: rpc-secret
+          volumeMounts:
+            - name: config
+              mountPath: /etc/garage.toml
+              subPath: garage.toml
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/garage
+      volumes:
+        - name: config
+          configMap:
+            name: garage-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: garage-data

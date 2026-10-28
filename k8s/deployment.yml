@@ -19,10 +19,8 @@ spec:
           imagePullPolicy: Never
           ports:
             - containerPort: 8000
-          volumeMounts:
-            - name: uploads
-              mountPath: /app/uploads
-      volumes:
-        - name: uploads
-          persistentVolumeClaim:
-            claimName: scanner-uploads
+          envFrom:
+            - configMapRef:
+                name: scanner-api-config
+            - secretRef:
+                name: scanner-s3

@@ -3,8 +3,25 @@ from pathlib import Path
 import shutil
 from uuid import uuid4
 from fastapi import UploadFile
+import os
+import boto3
+from botocore.config import Config
 
 app = FastAPI()
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=os.environ["S3_ENDPOINT_URL"],
+    region_name=os.environ["AWS_DEFAULT_REGION"],
+    config=Config(
+        signature_version="s3v4",
+        s3={"addressing_style": "path"},
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+    ),
+)
+
+bucket = os.environ["S3_BUCKET"]
 
 @app.get("/health")
 def health():
@@ -13,18 +30,13 @@ def health():
 @app.post("/scans", status_code=201)
 def upload_scan(file: UploadFile):
     scan_id = str(uuid4())
-    print(scan_id)
+    object_key = f"{scan_id}.bin"
 
-    upload_dir = Path("uploads")
-    upload_dir.mkdir(exist_ok=True)
-
-    destination = upload_dir / f"{scan_id}.bin"
-
-    with destination.open("wb") as output:
-        shutil.copyfileobj(file.file, output)
+    s3.upload_fileobj(file.file, bucket, object_key)
 
     return {
         "scan_id": scan_id,
         "filename": file.filename,
+        "object_key": object_key,
         "status": "stored",
     }
