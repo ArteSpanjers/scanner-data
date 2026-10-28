@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scanner-api
+  namespace: scanner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scanner-api #somecomment
+  template:
+    metadata:
+      labels:
+        app: scanner-api
+    spec:
+      containers:
+        - name: api
+          image: scanner-api:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: scanner-uploads
