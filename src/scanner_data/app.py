@@ -1,11 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, HTTPException
 from pathlib import Path
 import shutil
 from uuid import uuid4
-from fastapi import UploadFile
+# from fastapi import UploadFile
 import os
 import boto3
 from botocore.config import Config
+from botocore.exceptions import EndpointConnectionError
+# from fastapi import HTTPException
 
 app = FastAPI()
 
@@ -32,7 +34,13 @@ def upload_scan(file: UploadFile):
     scan_id = str(uuid4())
     object_key = f"{scan_id}.bin"
 
-    s3.upload_fileobj(file.file, bucket, object_key)
+    try:
+        s3.upload_fileobj(file.file, bucket, object_key)
+    except EndpointConnectionError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Scan storage is temporarily unavailable. Upload was not confirmed.",
+        ) from exc
 
     return {
         "scan_id": scan_id,
