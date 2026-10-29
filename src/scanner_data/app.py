@@ -1,13 +1,13 @@
-from fastapi import FastAPI, UploadFile, HTTPException
+from fastapi import FastAPI, UploadFile, HTTPException, Form
 from pathlib import Path
 import shutil
-from uuid import uuid4
-# from fastapi import UploadFile
+from uuid import UUID
 import os
 import boto3
 from botocore.config import Config
 from botocore.exceptions import EndpointConnectionError
-# from fastapi import HTTPException
+import hashlib
+
 
 app = FastAPI()
 
@@ -30,9 +30,17 @@ def health():
     return {"status": "ok"}
 
 @app.post("/scans", status_code=201)
-def upload_scan(file: UploadFile):
-    scan_id = str(uuid4())
+def upload_scan(file: UploadFile, measurement_id: UUID = Form(...)):
+    scan_id = str(measurement_id)
     object_key = f"{scan_id}.bin"
+
+    hasher = hashlib.sha256()
+
+    while chunk := file.file.read(1024 * 1024):
+        hasher.update(chunk)
+
+    checksum = hasher.hexdigest()
+    file.file.seek(0)
 
     try:
         s3.upload_fileobj(file.file, bucket, object_key)
@@ -46,5 +54,6 @@ def upload_scan(file: UploadFile):
         "scan_id": scan_id,
         "filename": file.filename,
         "object_key": object_key,
+        "sha256": checksum,
         "status": "stored",
     }

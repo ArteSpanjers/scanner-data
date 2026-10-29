@@ -2,6 +2,18 @@
 
 Small milestones from the scanner playground. Break things, learn things, write them down.
 
+## 2026-10-29 — Fake scanner and database foundations
+
+- Added a local simulator generating batches of five small 3D NumPy arrays with saved measurement IDs and JSON metadata.
+- Added an uploader that sends saved measurements to the API and prints HTTP responses.
+- Updated `/scans` to accept and validate a scanner-provided measurement UUID instead of generating a fresh ID per request.
+- Added chunked SHA-256 calculation and included the checksum in upload responses. Repeated IDs still overwrite objects; retry/conflict detection isn't implemented yet.
+- Added HTTP 503 handling for storage connection failures; tested Garage being unavailable and recovering.
+- Deployed PostgreSQL with its own PVC, Service and password Secret, and supplied database settings to the API Pod.
+- Added Psycopg and tested a database connection from Python inside the API Pod.
+- Added the initial `measurements` table schema with a unique measurement ID, checksum, object key, state and creation timestamp. The upload handler doesn't write database records yet.
+- Expanded the README command reference with live logs, simulator commands, SQL through standard input and database inspection.
+
 ## 2026-10-28 — Uploads now live in Garage
 
 - Deployed single-node Garage with a dedicated 1 GiB PVC, ConfigMap and ClusterIP Service.
@@ -22,4 +34,4 @@ Small milestones from the scanner playground. Break things, learn things, write 
 - Practised scaling replicas, replacing Pods and accessing the API through port-forward.
 - Added Git/Docker ignore rules and project documentation.
 
-Next up: metadata, checksums, safe retries and dataset states, then a pretend HPC consumer.
+Next up: record uploads in PostgreSQL, handle retries and conflicts, then build a pretend HPC consumer.

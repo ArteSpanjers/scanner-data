@@ -24,3 +24,9 @@ spec:
                 name: scanner-api-config
             - secretRef:
                 name: scanner-s3
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-auth
+                  key: POSTGRES_PASSWORD

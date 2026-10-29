@@ -16,7 +16,7 @@ Fake scanner → ingestion API → durable storage → validated dataset → fak
 
 ## What works now
 
-`GET /health` checks the API. `POST /scans` accepts a file and saves its unchanged bytes as `<uuid>.bin`. Every upload gets a new ID, so retries currently create duplicates.
+`GET /health` checks the API. `POST /scans` accepts a file and a scanner-provided measurement UUID, calculates SHA-256 and stores the unchanged bytes as `<measurement_id>.bin`. Resending an ID currently overwrites the object; duplicate/conflict detection is still ahead. Storage connection failures return HTTP 503.
 
 The API runs as the `scanner_data` Python package. Uvicorn serves it on port 8000; the Kubernetes Service exposes port 80 inside the cluster.
 
@@ -32,7 +32,7 @@ Local Python development (requires the S3 settings and credentials in your shell
 uv run uvicorn scanner_data.app:app --reload
 ```
 
-For Kubernetes, the setup below assumes the `garage-rpc` and `scanner-s3` Secrets already exist in namespace `scanner`, and Garage's `scans` bucket and API key permissions have been configured. Secret values stay out of Git. On a fresh cluster, those setup steps are also needed; applying YAML alone isn't enough.
+For Kubernetes, the setup below assumes the `garage-rpc`, `scanner-s3` and `postgres-auth` Secrets already exist in namespace `scanner`, and Garage's `scans` bucket and API key permissions have been configured. Secret values stay out of Git. On a fresh cluster, those setup steps and the database schema are also needed; applying YAML alone isn't enough.
 
 Create the cluster once if needed, then build and deploy:
 
@@ -53,31 +53,118 @@ Open [the upload docs](http://localhost:8002/docs). Keep port-forward running; i
 These assume the `kind-scanner` context, except where explicitly provided. Replace `<pod-name>` with an actual name.
 
 ```powershell
+# Check/select the cluster (kind's --name is a cluster, not a namespace)
+kind get clusters
+kubectl config current-context
+kubectl config use-context kind-scanner
+kubectl get nodes
+
 # Watch Pods, including their IPs and nodes
 kubectl --context kind-scanner get pods -n scanner -w -o wide
 
 # Inspect the app and its storage
 kubectl get deployment,rs,svc,pvc -n scanner
+kubectl get pvc -A
 kubectl get pv
+kubectl get storageclass
+kubectl get secret -n scanner
+
+# Follow HTTP requests/status codes, or inspect a failed container's last run
+kubectl logs -n scanner deployment/scanner-api -f
+kubectl logs -n scanner deployment/scanner-api --tail=50
+kubectl logs -n scanner deployment/garage --previous
 kubectl logs -n scanner deployment/scanner-api
 kubectl describe pod <pod-name> -n scanner
 
 # Explore one API Pod; Garage's image has no shell
 kubectl exec -it -n scanner deployment/scanner-api -- sh
+kubectl exec -it -n scanner deployment/scanner-api -- /app/.venv/bin/python
 
 # Check Garage and the bucket's object count/size
 kubectl exec -n scanner deployment/garage -- /garage status
+kubectl exec -n scanner deployment/garage -- /garage bucket list
 kubectl exec -n scanner deployment/garage -- /garage bucket info scans
+
+# Local access to the API (leave this terminal running)
+kubectl port-forward -n scanner service/scanner-api 8002:80
+
+# Apply changed configuration
+kubectl apply -f k8s/deployment.yml
 
 # Delete a Pod and watch its replacement appear
 kubectl delete pod <pod-name> -n scanner
 
-# Roll out a newly loaded image
+# Build, load and roll out new API code
+docker build -t scanner-api:local .
+kind load docker-image scanner-api:local --name scanner
 kubectl rollout restart deployment/scanner-api -n scanner
 kubectl rollout status deployment/scanner-api -n scanner
+
+# Reload Garage after changing its ConfigMap (mounted with subPath)
+kubectl apply -f k8s/garage-configmap.yml
+kubectl rollout restart deployment/garage -n scanner
+kubectl rollout status deployment/garage -n scanner
 ```
 
-`exec deployment/...` selects one Pod; it doesn't run in every replica. Ctrl+C stops a watch or port-forward, not the application.
+`exec deployment/...` selects one Pod; it doesn't run in every replica. Ctrl+C stops a watch, live logs or port-forward, not the application. Port-forward shows connections; API logs show HTTP status codes.
+
+`apply` updates configuration. A changed Pod template triggers replacement Pods. `rollout restart` requests fresh Pods; `rollout status` watches the latest rollout, not a particular past command. Restarting the API doesn't restart Garage or PostgreSQL.
+
+**Storage failure experiment:** the first command stops Garage, so uploads should fail with 503. Always restore it afterwards. These commands change the live replica count, not the YAML.
+
+```powershell
+kubectl scale deployment/garage -n scanner --replicas=0
+# Try an upload, then restore storage:
+kubectl scale deployment/garage -n scanner --replicas=1
+kubectl rollout status deployment/garage -n scanner
+```
+
+### PostgreSQL: inspect and run SQL
+
+```powershell
+# Open an interactive database client; use \q to exit
+kubectl exec -it -n scanner deployment/postgres -- psql -U postgres -d scanner
+
+# Describe the table (psql command) or read its rows (SQL)
+kubectl exec -n scanner deployment/postgres -- psql -U postgres -d scanner -c "\d measurements"
+kubectl exec -n scanner deployment/postgres -- psql -U postgres -d scanner -c "SELECT * FROM measurements;"
+
+# Apply the initial schema once; running it again reports that the table exists
+Get-Content -Raw database/001_create_measurements.sql |
+    kubectl exec -i -n scanner deployment/postgres -- psql -U postgres -d scanner -v ON_ERROR_STOP=1
+```
+
+For reusable checks, create `database/check_measurements.sql` with queries such as `SELECT * FROM measurements;`, then:
+
+```powershell
+Get-Content -Raw database/check_measurements.sql |
+    kubectl exec -i -n scanner deployment/postgres -- psql -U postgres -d scanner -v ON_ERROR_STOP=1
+```
+
+The pipe sends the file's text through **standard input**; `exec -i` forwards it into `psql`. Without `-c`, psql reads commands from that input. `ON_ERROR_STOP=1` stops on SQL errors; it doesn't automatically roll back earlier successful statements. `\d` describes structure; `SELECT` reads data.
+
+To test the API Pod's database access, open its Python terminal with the command above and enter:
+
+```python
+import psycopg
+conn = psycopg.connect(connect_timeout=5)
+conn.execute("SELECT current_database(), current_user").fetchone()
+conn.close()
+exit()
+```
+
+Psycopg reads `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` and `PGPASSWORD` from the Pod's environment. Python runs in the API Pod; PostgreSQL executes the query in the database Pod.
+
+### Simulator
+
+Run from the repository root:
+
+```powershell
+uv run python simulator/generate.py
+uv run python simulator/send.py
+```
+
+Generate adds five new measurements with arrays and JSON metadata. Send reuses every saved measurement's ID and file; it needs the API port-forward running. Generated data stays out of Git. Use the VS Code NumPy viewer to explore arrays; our bright cube occupies indices 20–43 on each axis.
 
 ## What we did per task
 

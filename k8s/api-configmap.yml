@@ -7,3 +7,7 @@ data:
   S3_ENDPOINT_URL: "http://garage:3900"
   AWS_DEFAULT_REGION: "garage"
   S3_BUCKET: "scans"
+  PGHOST: "postgres"
+  PGPORT: "5432"
+  PGDATABASE: "scanner"
+  PGUSER: "postgres"
