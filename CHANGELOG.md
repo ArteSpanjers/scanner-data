@@ -2,6 +2,17 @@
 
 Small milestones from the scanner playground. Break things, learn things, write them down.
 
+## 2026-10-29 — Upload records and controlled retries
+
+- Connected the upload handler to PostgreSQL through a dedicated database module.
+- Added atomic measurement-ID claims before Garage writes and `UPLOADING`, `COMPLETE` and `FAILED` state transitions.
+- Return 200 `already_stored` for completed uploads with matching checksums, without rewriting their objects.
+- Reject different contents under an existing ID with 409; verified stored bytes still match their recorded checksum.
+- Allow matching `FAILED` measurements to be reclaimed with a conditional database update and uploaded again.
+- Verified Garage connection failures produce 503 and `FAILED` records, and resending after recovery completes them.
+- Made the simulator continue after HTTP errors, connection failures and timeouts; added an in-memory content-conflict experiment.
+- Documented current behaviour, verification commands and remaining recovery gaps. Interrupted `UPLOADING` records, partial-success reconciliation and automatic retries are still ahead.
+
 ## 2026-10-29 — Fake scanner and database foundations
 
 - Added a local simulator generating batches of five small 3D NumPy arrays with saved measurement IDs and JSON metadata.
@@ -34,4 +45,4 @@ Small milestones from the scanner playground. Break things, learn things, write 
 - Practised scaling replicas, replacing Pods and accessing the API through port-forward.
 - Added Git/Docker ignore rules and project documentation.
 
-Next up: record uploads in PostgreSQL, handle retries and conflicts, then build a pretend HPC consumer.
+Next up: recover interrupted uploads, reconcile storage/database state and test concurrent requests, then build a pretend HPC consumer.

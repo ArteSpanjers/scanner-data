@@ -11,12 +11,29 @@ Fake scanner → ingestion API → durable storage → validated dataset → fak
 - [x] Deployment, Service and persistent uploads via a PVC
 - [x] S3-compatible object storage
 - [ ] Metadata, checksums, safe retries and dataset states
+  - Working: checksums, PostgreSQL records, completed retries and failed-upload retries
+  - Next: interrupted uploads, reconciliation and concurrency experiments
 - [ ] Fake processing with a Kubernetes Job
 - [ ] Later: practise deploying on my server
 
 ## What works now
 
-`GET /health` checks the API. `POST /scans` accepts a file and a scanner-provided measurement UUID, calculates SHA-256 and stores the unchanged bytes as `<measurement_id>.bin`. Resending an ID currently overwrites the object; duplicate/conflict detection is still ahead. Storage connection failures return HTTP 503.
+`GET /health` checks the API process; it doesn't check its dependencies. `POST /scans` accepts a file and a scanner-provided measurement UUID, calculates SHA-256 and stores the unchanged bytes as `<measurement_id>.bin`.
+
+PostgreSQL records the ID, checksum, object key and state. The API commits an `UPLOADING` claim before writing to Garage, then marks it `COMPLETE` after the upload succeeds.
+
+| Request | Behaviour |
+| :--- | :--- |
+| New ID | Claim, upload, mark `COMPLETE`; return **201** |
+| Existing ID, same checksum, `COMPLETE` | Return **200 `already_stored`** without rewriting Garage |
+| Existing ID, different checksum | Return **409** without overwriting the original |
+| Existing ID, same checksum, `UPLOADING` | Return **409**; recovery isn't implemented yet |
+| Existing ID, same checksum, `FAILED` | Atomically reclaim it and attempt the upload again |
+| Garage endpoint connection failure during upload | Mark `FAILED`; return **503** |
+
+Retries still send and hash the incoming file. A conditional database update ensures only one request can reclaim a failed measurement. The sender doesn't automatically retry: rerun it to resend saved measurements.
+
+Still a learning platform: an API crash or an unhandled error can leave `UPLOADING` behind. Garage writes and PostgreSQL updates aren't one transaction, so partial success needs recovery logic. Multi-Pod concurrency experiments are still ahead.
 
 The API runs as the `scanner_data` Python package. Uvicorn serves it on port 8000; the Kubernetes Service exposes port 80 inside the cluster.
 
@@ -26,7 +43,7 @@ Garage runs as one instance with replication factor 1. Its data survives Pod rep
 
 ## Run it
 
-Local Python development (requires the S3 settings and credentials in your shell, plus a Garage endpoint reachable from your laptop):
+Local Python development requires the S3 and PostgreSQL settings/credentials in your shell, endpoints reachable from your laptop, and the database schema applied:
 
 ```powershell
 uv run uvicorn scanner_data.app:app --reload
@@ -128,6 +145,7 @@ kubectl exec -it -n scanner deployment/postgres -- psql -U postgres -d scanner
 # Describe the table (psql command) or read its rows (SQL)
 kubectl exec -n scanner deployment/postgres -- psql -U postgres -d scanner -c "\d measurements"
 kubectl exec -n scanner deployment/postgres -- psql -U postgres -d scanner -c "SELECT * FROM measurements;"
+kubectl exec -n scanner deployment/postgres -- psql -U postgres -d scanner -c "SELECT state, count(*) FROM measurements GROUP BY state;"
 
 # Apply the initial schema once; running it again reports that the table exists
 Get-Content -Raw database/001_create_measurements.sql |
@@ -162,9 +180,15 @@ Run from the repository root:
 ```powershell
 uv run python simulator/generate.py
 uv run python simulator/send.py
+# After sending normally, try changed bytes under an existing ID: expect 409
+uv run python simulator/test_conflict.py
 ```
 
 Generate adds five new measurements with arrays and JSON metadata. Send reuses every saved measurement's ID and file; it needs the API port-forward running. Generated data stays out of Git. Use the VS Code NumPy viewer to explore arrays; our bright cube occupies indices 20–43 on each axis.
+
+The sender reports HTTP failures, timeouts and connection errors and continues to the next measurement. The conflict script changes one array value in memory; it leaves the local sample file untouched.
+
+**Experiments verified so far:** completed resends return 200; changed content under the same ID returns 409; a downloaded object's hash still matches its database record. With Garage stopped, new measurements become `FAILED`; after restoring Garage and resending, they become `COMPLETE`. Completed resends still work while Garage is down because that response uses the database record.
 
 ## What we did per task
 
@@ -199,8 +223,17 @@ Generate adds five new measurements with arrays and JSON metadata. Send reuses e
 - Replaced local file writes with Boto3 uploads; rebuilt, loaded and rolled out the API image.
 - Verified Garage's object count increased, then removed the API's old PVC mount.
 
+**Metadata and upload reliability**
+
+- Deployed PostgreSQL with its own PVC, Service and password Secret; connected from the API Pod with Psycopg.
+- Created the measurements table with a UUID primary key, checksum, object key, state and creation timestamp.
+- Added database helpers for atomic claims, record lookup, state updates and conditional reclaiming of failed uploads.
+- Added checksum-based retry/conflict decisions and tested stored bytes against the recorded hash.
+- Tested storage failure and successful recovery by resending the same measurements.
+- Made the simulator continue through individual request failures and added the conflict experiment.
+
 **Still ahead**
 
-- Metadata and reliability: dataset states, checksums, interrupted uploads and safe retries.
+- Metadata and reliability: recover interrupted uploads, reconcile partial success, test concurrent requests and add automatic sender retries.
 - Fake HPC: a Kubernetes Job that reads a scan and writes a result.
 - Server deployment: run the platform online for practice, later on.

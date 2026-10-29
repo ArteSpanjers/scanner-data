@@ -13,19 +13,28 @@ for metadata_path in sorted(Path("sample-data").glob("*/metadata.json")):
 
     print(f"Sending {measurement_id}...")
 
-    with scan_path.open("rb") as scan_file:
-        response = requests.post(
-            endpoint,
-            data={"measurement_id": measurement_id},
-            files={
-                "file": (
-                    scan_path.name,
-                    scan_file,
-                    "application/octet-stream",
-                )
-            },
-            timeout=(5, 60),
-        )
+    try:
+        with scan_path.open("rb") as scan_file:
+            response = requests.post(
+                endpoint,
+                data={"measurement_id": measurement_id},
+                files={
+                    "file": (
+                        scan_path.name,
+                        scan_file,
+                        "application/octet-stream",
+                    )
+                },
+                timeout=(5, 60),
+            )
+    except requests.exceptions.Timeout:
+        print(f"Timed out for {measurement_id}; outcome unknown. Continuing.")
+        continue
+    except requests.exceptions.ConnectionError:
+        print(f"Connection failed for {measurement_id}; continuing.")
+        continue
 
     print(f"HTTP {response.status_code}: {response.text}")
-    response.raise_for_status()
+
+    if not response.ok:
+        print(f"Upload failed for {measurement_id}; continuing.")

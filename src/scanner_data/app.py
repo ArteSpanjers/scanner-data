@@ -7,7 +7,8 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import EndpointConnectionError
 import hashlib
-
+from scanner_data.database import claim_measurement, set_measurement_state, get_measurement, reclaim_failed_measurement
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
@@ -42,13 +43,60 @@ def upload_scan(file: UploadFile, measurement_id: UUID = Form(...)):
     checksum = hasher.hexdigest()
     file.file.seek(0)
 
+    claimed = claim_measurement(measurement_id, checksum, object_key)
+
+    if not claimed:
+        existing = get_measurement(measurement_id)
+
+        if existing is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Measurement record unavailable. Try again later.",
+            )
+
+        if existing["sha256"] != checksum:
+            raise HTTPException(
+                status_code=409,
+                detail="This measurement ID has different file contents.",
+            )
+
+        if existing["state"] == "COMPLETE":
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "scan_id": scan_id,
+                    "object_key": existing["object_key"],
+                    "sha256": existing["sha256"],
+                    "status": "already_stored",
+                },
+            )
+
+        if existing["state"] == "FAILED":
+            claimed = reclaim_failed_measurement(measurement_id, checksum)
+
+            if not claimed:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Measurement state changed. Try again later.",
+                )
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Measurement is currently {existing['state']}.",
+            )
+
+
     try:
         s3.upload_fileobj(file.file, bucket, object_key)
     except EndpointConnectionError as exc:
+        set_measurement_state(measurement_id, "FAILED")
+
         raise HTTPException(
             status_code=503,
             detail="Scan storage is temporarily unavailable. Upload was not confirmed.",
         ) from exc
+
+    set_measurement_state(measurement_id, "COMPLETE")
 
     return {
         "scan_id": scan_id,
